@@ -1,0 +1,14 @@
+************************************************************
+***		Replacing SNMP with BMX                  ***
+***		-----------------------                  ***
+***		Maxime Beck                  		 ***
+***		RedHat Intern                  		 ***
+***		Aug-Nov 2013                  		 ***
+************************************************************
+
+Version : RHQ 4.8
+---------
+Descrition :
+------------
+Implemented bmx for availability check and virtual hosts metrics
+so SNMP is no longer needed.
