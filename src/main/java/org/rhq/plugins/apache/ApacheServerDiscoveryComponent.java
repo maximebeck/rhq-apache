@@ -18,20 +18,14 @@
  */
 package org.rhq.plugins.apache;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.URI;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -74,6 +68,7 @@ import org.rhq.rhqtransform.impl.PluginDescriptorBasedAugeasConfiguration;
  *
  * @author Ian Springer
  * @author Lukas Krejci
+ * @author Maxime Beck (Remplacement of the SNMP Module with mod_bmx)
  */
 public class ApacheServerDiscoveryComponent implements ResourceDiscoveryComponent<PlatformComponent>,
     ManualAddFacet<PlatformComponent>, ResourceUpgradeFacet<PlatformComponent> {
@@ -92,7 +87,7 @@ public class ApacheServerDiscoveryComponent implements ResourceDiscoveryComponen
             super(message, cause);
         }
     }
-
+    
     public static final Map<String, String> MODULE_SOURCE_FILE_TO_MODULE_NAME_20;
     public static final Map<String, String> MODULE_SOURCE_FILE_TO_MODULE_NAME_13;
 
@@ -186,9 +181,7 @@ public class ApacheServerDiscoveryComponent implements ResourceDiscoveryComponen
 
         //some hand picked modules
         MODULE_SOURCE_FILE_TO_MODULE_NAME_20.put("mod_jk.c", "jk_module");
-        MODULE_SOURCE_FILE_TO_MODULE_NAME_20.put("mod-snmpcommon.c", "snmpcommon_module");
-        MODULE_SOURCE_FILE_TO_MODULE_NAME_20.put("mod-snmpagt.c", "snmpagt_module");
-        MODULE_SOURCE_FILE_TO_MODULE_NAME_20.put("covalent-snmp-v20.c", "snmp_agt_module");
+        MODULE_SOURCE_FILE_TO_MODULE_NAME_20.put("mod_bmx.c", "bmx_module");
 
         //this list is for apache 1.3
         MODULE_SOURCE_FILE_TO_MODULE_NAME_13 = new LinkedHashMap<String, String>();
@@ -235,14 +228,14 @@ public class ApacheServerDiscoveryComponent implements ResourceDiscoveryComponen
 
         //and some hand-picks
         MODULE_SOURCE_FILE_TO_MODULE_NAME_13.put("mod_jk.c", "jk_module");
-        MODULE_SOURCE_FILE_TO_MODULE_NAME_13.put("covalent-snmp-v13.c", "snmp_agt_module");
+        MODULE_SOURCE_FILE_TO_MODULE_NAME_13.put("mod_bmx.c", "bmx_module");
     }
 
     public Set<DiscoveredResourceDetails>
         discoverResources(ResourceDiscoveryContext<PlatformComponent> discoveryContext) throws Exception {
-        Set<DiscoveredResourceDetails> discoveredResources = new HashSet<DiscoveredResourceDetails>();
-
-        // Process any PC-discovered OS processes...
+    	Set<DiscoveredResourceDetails> discoveredResources = new HashSet<DiscoveredResourceDetails>();
+        
+    	// Process any PC-discovered OS processes...
         List<ProcessScanResult> processes = discoveryContext.getAutoDiscoveredProcesses();
         for (ProcessScanResult process : processes) {
             try {
@@ -270,14 +263,14 @@ public class ApacheServerDiscoveryComponent implements ResourceDiscoveryComponen
      * the process info.
      * @throws Exception other unhandled exception
      */
-    private DiscoveredResourceDetails discoverSingleProcess(
+     private DiscoveredResourceDetails discoverSingleProcess(
         ResourceDiscoveryContext<PlatformComponent> discoveryContext, ProcessScanResult process)
         throws DiscoveryFailureException, Exception {
 
         if (isWindowsServiceRootInstance(process)) {
             return null;
         }
-
+        
         File executablePath = getExecutableAbsolutePath(process);
         log.debug("Apache executable path: " + executablePath);
 
@@ -352,23 +345,10 @@ public class ApacheServerDiscoveryComponent implements ResourceDiscoveryComponen
                 pluginConfig.put(new PropertySimple(ApacheServerComponent.PLUGIN_CONFIG_PROP_VHOST_FILES_MASK,
                     serverConfigFile.getParent() + File.separator + "*"));
         }
-
-        List<InetSocketAddress> snmpAddresses = findSNMPAddresses(serverConfig, new File(serverRoot));
-        if (snmpAddresses != null && snmpAddresses.size() > 0) {
-            InetSocketAddress addr = snmpAddresses.get(0);
-            int port = addr.getPort();
-
-            InetAddress host = ((addr.getAddress() == null) || addr.getAddress().isAnyLocalAddress()) ?
-                    InetAddress.getLocalHost() : addr.getAddress();
-
-            pluginConfig.put(new PropertySimple(ApacheServerComponent.PLUGIN_CONFIG_PROP_SNMP_AGENT_HOST, host
-                .getHostAddress()));
-            pluginConfig.put(new PropertySimple(ApacheServerComponent.PLUGIN_CONFIG_PROP_SNMP_AGENT_PORT, port));
-        }
-
+        
         return createResourceDetails(discoveryContext, pluginConfig, process.getProcessInfo(), binaryInfo);
     }
-
+    
     public ResourceUpgradeReport upgrade(ResourceUpgradeContext<PlatformComponent> context) {
         String inventoriedResourceKey = context.getResourceKey();
 
@@ -465,7 +445,7 @@ public class ApacheServerDiscoveryComponent implements ResourceDiscoveryComponen
         Address addr = HttpdAddressUtility.get(version).getMainServerSampleAddress(serverConfig, null, 0);
         return addr == null ? null : addr.toString();
     }
-
+    
     @Nullable
     private String getServerRoot(@NotNull ApacheBinaryInfo binaryInfo, @NotNull ProcessInfo processInfo) {
         // First see if -d was specified on the httpd command line.
@@ -724,107 +704,7 @@ public class ApacheServerDiscoveryComponent implements ResourceDiscoveryComponen
 
         return serverRoot + "||" + httpdConf;
     }
-
-    private static List<InetSocketAddress> findSNMPAddresses(ApacheDirectiveTree tree, File serverRoot) {
-        List<InetSocketAddress> ret = new ArrayList<InetSocketAddress>();
-
-        List<ApacheDirective> confs = tree.search("/SNMPConf");
-
-        if (confs.size() == 0) {
-            log.info("SNMPConf directive not found. Skipping SNMP configuration.");
-            return ret;
-        }
-
-        String confDirName = confs.get(0).getValuesAsString();
-        if (confDirName == null || confDirName.isEmpty()) {
-            log.warn("The SNMPConf directive seems to not have a value. Skipping SNMP configuration.");
-            return ret;
-        }
-
-        File confDir = new File(confDirName);
-
-        if (!confDir.isAbsolute()) {
-            confDir = new File(serverRoot, confDirName);
-        }
-
-        File snmpdConf = new File(confDir, "snmpd.conf");
-
-        if (!snmpdConf.exists()) {
-            log.warn("Could not find a snmpd.conf file under the configured directory '" + confDirName
-                + "'. Skipping SNMP configuration.");
-            return ret;
-        }
-
-        try {
-            String agentAddressLine = findSNMPAgentAddressConfigLine(snmpdConf);
-
-            if (agentAddressLine == null) {
-                log.warn("Could not find the 'agentaddress' property in the snmpd.conf. Skipping SNMP configuration.");
-                return ret;
-            }
-
-            int specStartIdx = agentAddressLine.indexOf("agentaddress") + "agentaddress".length() + 1;
-
-            while (Character.isWhitespace(agentAddressLine.charAt(specStartIdx)))
-                specStartIdx++;
-
-            String spec = agentAddressLine.substring(specStartIdx);
-
-            String[] addrs = spec.split(",");
-
-            try {
-                for (String addr : addrs) {
-                    if (addr.startsWith("udp") || addr.startsWith("tcp")) {
-                        //this contains the transport spec - either "udp:" or "tcp:"
-                        addr = addr.substring(4);
-                    }
-
-                    int atIdx = addr.indexOf('@');
-                    String port = addr;
-                    String host = null;
-                    if (atIdx > 0) {
-                        host = addr.substring(atIdx + 1);
-                        port = addr.substring(0, atIdx);
-                    }
-
-                    InetSocketAddress address;
-                    if (host != null) {
-                        address = new InetSocketAddress(host, Integer.parseInt(port));
-                    } else {
-                        address = new InetSocketAddress(Integer.parseInt(port));
-                    }
-
-                    ret.add(address);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to parse the SNMP 'agentaddress' configuration property: " + agentAddressLine, e);
-            }
-        } catch (IOException e) {
-            log.warn("Failed to read in the configured snmpd.conf file: " + snmpdConf.getAbsolutePath(), e);
-        }
-
-        return ret;
-    }
-
-    private static String findSNMPAgentAddressConfigLine(File snmpdConf) throws IOException {
-        BufferedReader rdr = new BufferedReader(new FileReader(snmpdConf));
-
-        try {
-            Pattern search = Pattern.compile("^\\s*agentaddress.*");
-            String line;
-
-            while ((line = rdr.readLine()) != null) {
-                if (search.matcher(line).matches()) {
-                    return line;
-                }
-            }
-
-            return null;
-        } finally {
-            rdr.close();
-        }
-    }
-
+    
     public static Map<String, String> getDefaultModuleNames(String version) {
         switch (HttpdAddressUtility.get(version)) {
         case APACHE_1_3:

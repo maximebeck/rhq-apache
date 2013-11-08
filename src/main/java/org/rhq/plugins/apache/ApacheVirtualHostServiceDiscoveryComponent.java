@@ -19,19 +19,14 @@
 package org.rhq.plugins.apache;
 
 import java.io.File;
-import java.net.InetAddress;
 import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.UnknownHostException;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
+import java.util.regex.Pattern;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -47,40 +42,33 @@ import org.rhq.core.pluginapi.upgrade.ResourceUpgradeContext;
 import org.rhq.core.pluginapi.upgrade.ResourceUpgradeFacet;
 import org.rhq.plugins.apache.parser.ApacheDirectiveTree;
 import org.rhq.plugins.apache.util.HttpdAddressUtility;
-import org.rhq.plugins.apache.util.RuntimeApacheConfiguration;
+import org.rhq.plugins.apache.util.HttpdAddressUtility.Address;
 import org.rhq.plugins.apache.util.VHostSpec;
 import org.rhq.plugins.apache.util.VirtualHostLegacyResourceKeyUtil;
-import org.rhq.plugins.apache.util.HttpdAddressUtility.Address;
-import org.rhq.plugins.www.snmp.SNMPException;
-import org.rhq.plugins.www.snmp.SNMPSession;
-import org.rhq.plugins.www.snmp.SNMPValue;
 
 /**
- * Discovers VirtualHosts under the Apache server by reading them out from Augeas tree constructed
- * in the parent component. If Augeas is not present, an attempt is made to discover the vhosts using
- * SNMP module.
- * 
  * @author Ian Springer
  * @author Lukas Krejci
+ * @author Maxime Beck (Remplacement of the SNMP Module with mod_bmx)
  */
 public class ApacheVirtualHostServiceDiscoveryComponent implements ResourceDiscoveryComponent<ApacheServerComponent>,
     ResourceUpgradeFacet<ApacheServerComponent> {
-
-    private static final String COULD_NOT_DETERMINE_THE_VIRTUAL_HOST_ADDRESS =
-        "*** Could not determine the virtual host address ***";
-
+	
+	private static final String COULD_NOT_DETERMINE_THE_VIRTUAL_HOST_ADDRESS =
+            "*** Could not determine the virtual host address ***";
+	
     public static final String LOGS_DIRECTORY_NAME = "logs";
 
     private static final String RT_LOG_FILE_NAME_SUFFIX = "_rt.log";
 
-    private static final String LEGACY_SNMP_SERVICE_INDEX_CONFIG_PROP = "snmpWwwServiceIndex";
+    private static final String LEGACY_SNMP_SERVICE_INDEX_CONFIG_PROP = "snmpWwwServiceIndex";       
 
     private static final Log log = LogFactory.getLog(ApacheVirtualHostServiceDiscoveryComponent.class);
-
+    Pattern hostPattern = Pattern.compile(".*Host=(.+),.*");
+    
     public Set<DiscoveredResourceDetails> discoverResources(ResourceDiscoveryContext<ApacheServerComponent> context)
         throws InvalidPluginConfigurationException, Exception {
-
-        Set<DiscoveredResourceDetails> discoveredResources = new LinkedHashSet<DiscoveredResourceDetails>();
+    	Set<DiscoveredResourceDetails> discoveredResources = new LinkedHashSet<DiscoveredResourceDetails>();
 
         ApacheServerComponent serverComponent = context.getParentResourceComponent();
         ApacheDirectiveTree tree = serverComponent.parseRuntimeConfiguration(false);
@@ -155,7 +143,7 @@ public class ApacheVirtualHostServiceDiscoveryComponent implements ResourceDisco
                 pluginConfiguration, null));
         }
 
-        return discoveredResources;
+        return discoveredResources;    	
     }
 
     public ResourceUpgradeReport upgrade(ResourceUpgradeContext<ApacheServerComponent> inventoriedResource) {
@@ -242,7 +230,7 @@ public class ApacheVirtualHostServiceDiscoveryComponent implements ResourceDisco
 
             return report;
         }
-
+        
         Map<String, Set<VHostSpec>> possibleMatchesPerRK = new HashMap<String, Set<VHostSpec>>();
         for (VHostSpec vhost : vhosts) {
             Set<String> legacyResourceKeys = legacyResourceKeyUtil.getLegacyVirtualHostResourceKeys(vhost);
@@ -280,11 +268,12 @@ public class ApacheVirtualHostServiceDiscoveryComponent implements ResourceDisco
                 newResourceKey = createResourceKey(vhost.serverName, vhost.hosts);
             }
         }
-
+        
         ResourceUpgradeReport report = new ResourceUpgradeReport();
         report.setNewResourceKey(newResourceKey);
 
         return report;
+        
     }
 
     private void discoverMainServer(ResourceDiscoveryContext<ApacheServerComponent> context,
@@ -358,4 +347,5 @@ public class ApacheVirtualHostServiceDiscoveryComponent implements ResourceDisco
 
         matches.add(vhost);
     }
+
 }

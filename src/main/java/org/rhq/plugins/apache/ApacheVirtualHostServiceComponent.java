@@ -18,9 +18,14 @@
  */
 package org.rhq.plugins.apache;
 
+import java.io.BufferedInputStream;
+import java.io.IOException;
 import java.io.File;
+import java.net.ConnectException;
+import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -37,9 +42,11 @@ import org.rhq.core.domain.configuration.ConfigurationUpdateStatus;
 import org.rhq.core.domain.configuration.PropertySimple;
 import org.rhq.core.domain.configuration.definition.ConfigurationDefinition;
 import org.rhq.core.domain.measurement.AvailabilityType;
+import org.rhq.core.domain.measurement.DataType;
+import org.rhq.core.domain.measurement.MeasurementDataNumeric;
+import org.rhq.core.domain.measurement.MeasurementDataTrait;
 import org.rhq.core.domain.measurement.MeasurementReport;
 import org.rhq.core.domain.measurement.MeasurementScheduleRequest;
-import org.rhq.core.domain.measurement.calltime.CallTimeData;
 import org.rhq.core.domain.resource.CreateResourceStatus;
 import org.rhq.core.domain.resource.ResourceType;
 import org.rhq.core.pluginapi.configuration.ConfigurationFacet;
@@ -59,16 +66,12 @@ import org.rhq.plugins.apache.parser.ApacheDirectiveTree;
 import org.rhq.plugins.apache.util.AugeasNodeSearch;
 import org.rhq.plugins.apache.util.AugeasNodeValueUtil;
 import org.rhq.plugins.apache.util.ConfigurationTimestamp;
-import org.rhq.plugins.apache.util.PluginUtility;
 import org.rhq.plugins.apache.util.RuntimeApacheConfiguration;
-import org.rhq.plugins.www.snmp.SNMPException;
-import org.rhq.plugins.www.snmp.SNMPSession;
-import org.rhq.plugins.www.snmp.SNMPValue;
-import org.rhq.plugins.www.util.WWWUtils;
 
 /**
  * @author Ian Springer
  * @author Lukas Krejci
+ * @author Maxime Beck (Remplacement of the SNMP Module with mod_bmx)
  */
 public class ApacheVirtualHostServiceComponent implements ResourceComponent<ApacheServerComponent>, MeasurementFacet,
     ConfigurationFacet, DeleteResourceFacet, CreateChildResourceFacet {
@@ -87,7 +90,6 @@ public class ApacheVirtualHostServiceComponent implements ResourceComponent<Apac
 
     public static final String SERVER_NAME_CONFIG_PROP = "ServerName";
 
-    private static final String RESPONSE_TIME_METRIC = "ResponseTime";
     /** Multiply by 1/1000 to convert logged response times, which are in microseconds, to milliseconds. */
     private static final double RESPONSE_TIME_LOG_TIME_MULTIPLIER = 0.001;
 
@@ -134,30 +136,30 @@ public class ApacheVirtualHostServiceComponent implements ResourceComponent<Apac
         this.url = null;
     }
 
-    public AvailabilityType getAvailability() {
-        if (url != null) {
-            int timeout = PluginUtility.getAvailabilityFacetTimeout();
-            return WWWUtils.isAvailable(url, timeout) ? AvailabilityType.UP : AvailabilityType.DOWN;
-        } else {
-            try {
-                //we don't need the SNMP connection to figure out the index on which the SNMP
-                //module would report this vhost. So first, let's check if that index is valid
-                //(i.e. check that the vhost is actually still present in the apache configuration)                                
-                if (getWwwServiceIndex() < 1) {
-                    return AvailabilityType.DOWN;
-                }
-
-                //ok, so the vhost is present. Now let's just ping the SNMP module to see
-                //if it is reachable and base our availability on that...
-                SNMPSession snmpSession = resourceContext.getParentResourceComponent().getSNMPSession();
-
-                return snmpSession.ping() ? AvailabilityType.UP : AvailabilityType.DOWN;
-            } catch (Exception e) {
-                LOG.debug("Determining the availability of the vhost [" + resourceContext.getResourceKey()
-                    + "] using SNMP failed.", e);
-                return AvailabilityType.DOWN;
-            }
-        }
+    public AvailabilityType getAvailability() {	  
+    	boolean availability = false;
+    	
+	   	 try {
+	   		 URL url = new URL(ApacheServerComponent.getBmxUrl());
+	   		 HttpURLConnection urlConn = (HttpURLConnection) url.openConnection();
+	   		 urlConn.connect();
+	   		 
+	   		 if(urlConn.getResponseCode() == HttpURLConnection.HTTP_OK)
+	   			 availability = true;
+	   		 else
+	   			 availability = false;
+	   	 }catch (ConnectException e) {
+	   		LOG.info("The Apache server is down !");
+	   	 } catch (MalformedURLException e) {
+	   		LOG.error("Malformed URL : " + ApacheServerComponent.getBmxUrl());
+	   	 } catch (IOException e) {
+	   		 e.printStackTrace();
+	   	 }
+	   	 
+	   	 if(!availability)
+	   		 return AvailabilityType.DOWN;
+	   	 else
+	   		 return AvailabilityType.UP;
     }
 
     public Configuration loadResourceConfiguration() throws Exception {
@@ -222,8 +224,6 @@ public class ApacheVirtualHostServiceComponent implements ResourceComponent<Apac
             throw new IllegalStateException(ApacheServerComponent.CONFIGURATION_NOT_SUPPORTED_ERROR_MESSAGE);
         }
 
-        ApacheServerComponent parent = resourceContext.getParentResourceComponent();
-
         if (MAIN_SERVER_RESOURCE_KEY.equals(resourceContext.getResourceKey())) {
             throw new IllegalArgumentException(
                 "Cannot delete the virtual host representing the main server configuration.");
@@ -248,53 +248,36 @@ public class ApacheVirtualHostServiceComponent implements ResourceComponent<Apac
         }
     }
 
-    public void getValues(MeasurementReport report, Set<MeasurementScheduleRequest> schedules) throws Exception {
-        SNMPSession snmpSession = this.resourceContext.getParentResourceComponent().getSNMPSession();
-        int primaryIndex = getWwwServiceIndex();
-        boolean ping = snmpSession.ping();
-        boolean snmpMetricsSupported = primaryIndex >= 0 && ping;
+    public void getValues(MeasurementReport report, Set<MeasurementScheduleRequest> schedules) throws Exception {    	
+    	URL url;
+    	URLConnection conn;
+    	
+    	url = new URL(ApacheServerComponent.getBmxUrl());
+        conn = url.openConnection();
+        BufferedInputStream in = new BufferedInputStream(conn.getInputStream());       
+        Map<String,String> values = ApacheServerComponent.parseInput(in);
+        in.close();
 
-        if (LOG.isDebugEnabled()) {
-            if (snmpMetricsSupported) {
-                LOG.debug("SNMP metrics collection supported for VirtualHost service #" + primaryIndex);
-            } else {
-                LOG.debug("SNMP metrics collection unsupported for VirtualHost: primaryIndex[" + primaryIndex
-                    + "], session[" + snmpSession + "], ping[" + ping + "]");
-            }
-        }
 
-        for (MeasurementScheduleRequest schedule : schedules) {
-            String metricName = schedule.getName();
-            if (metricName.equals(RESPONSE_TIME_METRIC)) {
-                if (this.logParser != null) {
-                    try {
-                        CallTimeData callTimeData = new CallTimeData(schedule);
-                        this.logParser.parseLog(callTimeData);
-                        report.addData(callTimeData);
-                    } catch (Exception e) {
-                        LOG.error("Failed to retrieve HTTP call-time data.", e);
-                    }
-                } else {
-                    LOG.error("The '" + RESPONSE_TIME_METRIC + "' metric is enabled for resource '"
-                        + this.resourceContext.getResourceKey() + "', but no value is defined for the '"
-                        + RESPONSE_TIME_LOG_FILE_CONFIG_PROP + "' connection property.");
-                    // TODO: Communicate this error back to the server for display in the GUI.
-                }
-            } else {
-                if (snmpMetricsSupported) {
-                    // Assume anything else is an SNMP metric.
-                    try {
-                        collectSnmpMetric(report, primaryIndex, snmpSession, schedule);
-                    } catch (SNMPException e) {
-                        LOG.error("An error occurred while attempting to collect an SNMP metric.", e);
-                    }
-                }
-            }
-        }
-
+         for (MeasurementScheduleRequest req : schedules) {
+             String name = req.getName();
+             if (values.containsKey(name)) {
+                 if (req.getDataType()== DataType.TRAIT) {
+                     String val = values.get(name);
+                     MeasurementDataTrait mdt = new MeasurementDataTrait(req,val);                     
+                     report.addData(mdt);
+                 } else {
+                    Double val = Double.valueOf(values.get(name));
+                    MeasurementDataNumeric mdn = new MeasurementDataNumeric(req,val);
+                    report.addData(mdn);
+                 }
+             }
+         }
+         
         LOG.info("Collected " + report.getDataCount() + " metrics for VirtualHost "
             + this.resourceContext.getResourceKey() + ".");
     }
+    
 
     public CreateResourceReport createResource(CreateResourceReport report) {
         if (!isAugeasEnabled()) {
@@ -452,7 +435,7 @@ public class ApacheVirtualHostServiceComponent implements ResourceComponent<Apac
                 + "] contains conditional blocks. This is not supported by this plugin.");
         }
     }
-
+    
     /**
      * @see ApacheServerComponent#finishConfigurationUpdate(ConfigurationUpdateReport)
      */
@@ -472,68 +455,7 @@ public class ApacheVirtualHostServiceComponent implements ResourceComponent<Apac
     public void deleteEmptyFile(AugeasTree tree, AugeasNode deletedNode) {
         resourceContext.getParentResourceComponent().deleteEmptyFile(tree, deletedNode);
     }
-
-    private void collectSnmpMetric(MeasurementReport report, int primaryIndex, SNMPSession snmpSession,
-        MeasurementScheduleRequest schedule) throws SNMPException {
-        SNMPValue snmpValue = null;
-        String metricName = schedule.getName();
-        int dotIndex = metricName.indexOf('.');
-        String mibName;
-        if (dotIndex == -1) {
-            // it's a service metric (e.g. "wwwServiceName") or a summary metric (e.g. "wwwSummaryInRequests")
-            mibName = metricName;
-            List<SNMPValue> snmpValues = snmpSession.getColumn(mibName);
-
-            // NOTE: We assume SNMPValue's are returned in index-order.
-            snmpValue = snmpValues.get(primaryIndex - 1);
-        } else {
-            // it's a request or response metric (e.g. "wwwRequestInRequests.GET" or "wwwResponseOutResponses.200")
-            mibName = metricName.substring(0, dotIndex);
-            String mibSecondaryIndex = metricName.substring(dotIndex + 1);
-            String oid;
-            try {
-                Integer.parseInt(mibSecondaryIndex);
-                oid = mibSecondaryIndex;
-            } catch (NumberFormatException e) {
-                // OID must be encoded as a string (e.g. 3.71.69.84 == "GET") - decode it
-                oid = convertStringToOid(mibSecondaryIndex);
-            }
-
-            boolean found = false;
-            Map<String, SNMPValue> table = snmpSession.getTable(mibName, primaryIndex);
-            if (table != null) {
-                snmpValue = table.get(oid);
-                if (snmpValue != null) {
-                    found = true;
-                }
-            }
-
-            if (!found) {
-                LOG.error("Entry '" + oid + "' not found for " + mibName + "[" + primaryIndex + "].");
-                LOG.error("Table:\n" + table);
-                return;
-            }
-        }
-
-        LOG.debug("Collected SNMP metric [" + metricName + "], value = " + snmpValue);
-
-        boolean valueIsTimestamp = false;
-        ApacheServerComponent.addSnmpMetricValueToReport(report, schedule, snmpValue, valueIsTimestamp);
-    }
-
-    private String convertStringToOid(String string) {
-        String oid;
-        StringBuilder strBuf = new StringBuilder();
-        strBuf.append(string.length()); // first digit in OID is the length of the string
-        for (int i = 0; i < string.length(); i++) {
-            // remaining digits are the integer values of each of the characters in the string
-            strBuf.append('.').append((byte) string.charAt(i));
-        }
-
-        oid = strBuf.toString();
-        return oid;
-    }
-
+    
     public static int getWwwServiceIndex(ApacheServerComponent parent, String resourceKey) {
         //figure out the servername and addresses of this virtual host
         //from the resource key.
@@ -611,11 +533,12 @@ public class ApacheVirtualHostServiceComponent implements ResourceComponent<Apac
      * @return the index of the virtual host that identifies it in SNMP
      * @throws Exception on SNMP error
      */
+    
     private int getWwwServiceIndex() {
         ConfigurationTimestamp currentTimestamp =
             resourceContext.getParentResourceComponent().getConfigurationTimestamp();
         if (!lastConfigurationTimeStamp.equals(currentTimestamp)) {
-            snmpWwwServiceIndex = -1;
+        	snmpWwwServiceIndex = -1;
             //don't go through this configuration again even if we fail further below.. we'd fail again.
             lastConfigurationTimeStamp = currentTimestamp;
 

@@ -28,12 +28,6 @@
       </dependency>
 
       <dependency>
-         <groupId>org.snmp4j</groupId>
-         <artifactId>snmp4j</artifactId>
-         <version>1.8.2</version>
-      </dependency>
-
-      <dependency>
          <groupId>net.java.dev.jna</groupId>
          <artifactId>jna</artifactId>
          <version>${jna.version}</version>

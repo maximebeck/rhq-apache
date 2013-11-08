@@ -18,11 +18,16 @@
  */
 package org.rhq.plugins.apache;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.ConnectException;
+import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.util.Date;
+import java.net.URLConnection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,13 +54,14 @@ import org.rhq.augeas.tree.AugeasTreeException;
 import org.rhq.augeas.util.Glob;
 import org.rhq.core.domain.configuration.Configuration;
 import org.rhq.core.domain.configuration.ConfigurationUpdateStatus;
-import org.rhq.core.domain.configuration.Property;
 import org.rhq.core.domain.configuration.PropertyList;
 import org.rhq.core.domain.configuration.PropertyMap;
+import org.rhq.core.domain.configuration.Property;
 import org.rhq.core.domain.configuration.PropertySimple;
 import org.rhq.core.domain.configuration.definition.ConfigurationDefinition;
 import org.rhq.core.domain.event.EventSeverity;
 import org.rhq.core.domain.measurement.AvailabilityType;
+import org.rhq.core.domain.measurement.DataType;
 import org.rhq.core.domain.measurement.MeasurementDataNumeric;
 import org.rhq.core.domain.measurement.MeasurementDataTrait;
 import org.rhq.core.domain.measurement.MeasurementReport;
@@ -86,13 +92,7 @@ import org.rhq.plugins.apache.parser.ApacheDirectiveTree;
 import org.rhq.plugins.apache.util.ApacheBinaryInfo;
 import org.rhq.plugins.apache.util.ConfigurationTimestamp;
 import org.rhq.plugins.apache.util.HttpdAddressUtility;
-import org.rhq.plugins.apache.util.PluginUtility;
 import org.rhq.plugins.platform.PlatformComponent;
-import org.rhq.plugins.www.snmp.SNMPClient;
-import org.rhq.plugins.www.snmp.SNMPException;
-import org.rhq.plugins.www.snmp.SNMPSession;
-import org.rhq.plugins.www.snmp.SNMPValue;
-import org.rhq.plugins.www.util.WWWUtils;
 import org.rhq.rhqtransform.AugeasRHQComponent;
 
 /**
@@ -100,6 +100,7 @@ import org.rhq.rhqtransform.AugeasRHQComponent;
  *
  * @author Ian Springer
  * @author Lukas Krejci
+ * @author Maxime Beck (Remplacement of the SNMP Module with mod_bmx)
  */
 public class ApacheServerComponent implements AugeasRHQComponent, ResourceComponent<PlatformComponent>,
     MeasurementFacet, OperationFacet, ConfigurationFacet, CreateChildResourceFacet {
@@ -118,12 +119,6 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
     public static final String PLUGIN_CONFIG_PROP_HTTPD_CONF = "configFile";
     public static final String AUGEAS_HTTP_MODULE_NAME = "Httpd";
 
-    public static final String PLUGIN_CONFIG_PROP_SNMP_AGENT_HOST = "snmpAgentHost";
-    public static final String PLUGIN_CONFIG_PROP_SNMP_AGENT_PORT = "snmpAgentPort";
-    public static final String PLUGIN_CONFIG_PROP_SNMP_AGENT_COMMUNITY = "snmpAgentCommunity";
-    public static final String PLUGIN_CONFIG_PROP_SNMP_REQUEST_TIMEOUT = "snmpRequestTimeout";
-    public static final String PLUGIN_CONFIG_PROP_SNMP_REQUEST_RETRIES = "snmpRequestRetries";
-
     public static final String PLUGIN_CONFIG_PROP_ERROR_LOG_FILE_PATH = "errorLogFilePath";
     public static final String PLUGIN_CONFIG_PROP_ERROR_LOG_EVENTS_ENABLED = "errorLogEventsEnabled";
     public static final String PLUGIN_CONFIG_PROP_ERROR_LOG_MINIMUM_SEVERITY = "errorLogMinimumSeverity";
@@ -141,9 +136,6 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
     public static final String PLUGIN_CONFIG_MODULE_NAME = "moduleName";
     public static final String PLUGIN_CONFIG_MODULE_SOURCE_FILE = "moduleSourceFile";
 
-    private static final long DEFAULT_SNMP_REQUEST_TIMEOUT = 2000L;
-    private static final int DEFAULT_SNMP_REQUEST_RETRIES = 1;
-
     public static final String AUXILIARY_INDEX_PROP = "_index";
 
     public static final String SERVER_BUILT_TRAIT = "serverBuilt";
@@ -160,13 +152,17 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
     private static final String[] CONTROL_SCRIPT_PATHS = { "bin/apachectl", "sbin/apachectl", "bin/apachectl2",
         "sbin/apachectl2" };
 
+    private static final String DEFAULT_BMX_HANDLER_URL = "http://localhost:8000/bmx";
+
+    private static String bmxUrl;
+    private static String vHost;
+    static Pattern typePattern = Pattern.compile(".*Type=([\\w-]+),.*");
+    
     private ResourceContext<PlatformComponent> resourceContext;
     private EventContext eventContext;
-    private SNMPClient snmpClient;
     private URL url;
     private ApacheBinaryInfo binaryInfo;
-    private long availPingTime = -1;
-
+    
     private Map<String, String> moduleNames;
 
     /**
@@ -174,188 +170,193 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
      */
     private ApacheServerOperationsDelegate operationsDelegate;
 
-    public void start(ResourceContext<PlatformComponent> resourceContext) throws Exception {
+    public void start(ResourceContext<PlatformComponent> resourceContext) throws Exception {      
         log.info("Initializing Resource component for Apache Server [" + resourceContext.getResourceKey() + "]...");
 
         this.resourceContext = resourceContext;
         this.eventContext = resourceContext.getEventContext();
-        this.snmpClient = new SNMPClient();
 
-        try {
-            boolean configured = false;
-
-            SNMPSession snmpSession = getSNMPSession();
-            if (!snmpSession.ping()) {
-                log.warn("Failed to connect to SNMP agent at "
-                    + snmpSession
-                    + "\n"
-                    + ". Make sure\n1) the managed Apache server has been instrumented with the JON SNMP module,\n"
-                    + "2) the Apache server is running, and\n"
-                    + "3) the SNMP agent host, port, and community are set correctly in this resource's connection properties.\n"
-                    + "The agent will not be able to record metrics from apache httpd without SNMP");
-            } else {
-                configured = true;
-            }
-
-            Configuration pluginConfig = this.resourceContext.getPluginConfiguration();
-            String url = pluginConfig.getSimpleValue(PLUGIN_CONFIG_PROP_URL, null);
-            if (url != null) {
-                try {
-                    this.url = new URL(url);
-                    if (this.url.getPort() == 0) {
-                        log.error("The 'url' connection property is invalid - 0 is not a valid port; please change the value to the "
-                            + "port the \"main\" Apache server is listening on. NOTE: If the 'url' property was set this way "
-                            + "after autodiscovery, you most likely did not include the port in the ServerName directive for "
-                            + "the \"main\" Apache server in httpd.conf.");
-                    } else {
-                        configured = true;
-                    }
-                } catch (MalformedURLException e) {
-                    throw new InvalidPluginConfigurationException("Value of '" + PLUGIN_CONFIG_PROP_URL
-                        + "' connection property ('" + url + "') is not a valid URL.");
-                }
-            }
-
-            if (!configured) {
-                throw new InvalidPluginConfigurationException(
-                    "Neither SNMP nor an URL for checking availability has been configured");
-            }
-
-            File executablePath = getExecutablePath();
+        boolean configured = false;
+        
+        Configuration pluginConfig = this.resourceContext.getPluginConfiguration();
+        String url = pluginConfig.getSimpleValue(PLUGIN_CONFIG_PROP_URL, null);
+        bmxUrl = pluginConfig.getSimpleValue("bmxUrl", DEFAULT_BMX_HANDLER_URL);
+        vHost = pluginConfig.getSimpleValue("vhost","");        
+        
+        if (url != null) {
             try {
-                this.binaryInfo =
-                    ApacheBinaryInfo.getInfo(executablePath.getPath(), this.resourceContext.getSystemInformation());
-            } catch (Exception e) {
-                throw new InvalidPluginConfigurationException("'" + executablePath
-                    + "' is not a valid Apache executable (" + e + ").");
-            }
-
-            this.operationsDelegate =
-                new ApacheServerOperationsDelegate(this, pluginConfig, this.resourceContext.getSystemInformation());
-
-            //init the module names with the defaults
-            moduleNames =
-                new HashMap<String, String>(ApacheServerDiscoveryComponent.getDefaultModuleNames(binaryInfo
-                    .getVersion()));
-
-            //and add the user-provided overrides/additions
-            PropertyList list = resourceContext.getPluginConfiguration().getList(PLUGIN_CONFIG_CUSTOM_MODULE_NAMES);
-
-            if (list != null) {
-                for (Property p : list.getList()) {
-                    PropertyMap map = (PropertyMap) p;
-                    String sourceFile = map.getSimpleValue(PLUGIN_CONFIG_MODULE_SOURCE_FILE, null);
-                    String moduleName = map.getSimpleValue(PLUGIN_CONFIG_MODULE_NAME, null);
-
-                    if (sourceFile == null || moduleName == null) {
-                        log.info("A corrupted module name mapping found (" + sourceFile + " = " + moduleName
-                            + "). Check your module mappings in the plugin configuration for the server: "
-                            + resourceContext.getResourceKey());
-                        continue;
-                    }
-
-                    moduleNames.put(sourceFile, moduleName);
+                this.url = new URL(url);
+                if (this.url.getPort() == 0) {
+                    log.error("The 'url' connection property is invalid - 0 is not a valid port; please change the value to the "
+                        + "port the \"main\" Apache server is listening on. NOTE: If the 'url' property was set this way "
+                        + "after autodiscovery, you most likely did not include the port in the ServerName directive for "
+                        + "the \"main\" Apache server in httpd.conf.");
+                } else {
+                    configured = true;
                 }
+            } catch (MalformedURLException e) {
+                throw new InvalidPluginConfigurationException("Value of '" + PLUGIN_CONFIG_PROP_URL
+                    + "' connection property ('" + url + "') is not a valid URL.");
             }
-
-            startEventPollers();
-        } catch (Exception e) {
-            if (this.snmpClient != null) {
-                this.snmpClient.close();
-            }
-            throw e;
+        } 
+                
+        if (!configured) {
+        	log.info("Availability will be check using BMX");
         }
+        
+        File executablePath = getExecutablePath();
+        try {
+            this.binaryInfo =
+                ApacheBinaryInfo.getInfo(executablePath.getPath(), this.resourceContext.getSystemInformation());
+        } catch (Exception e) {
+            throw new InvalidPluginConfigurationException("'" + executablePath
+                + "' is not a valid Apache executable (" + e + ").");
+        }
+
+        this.operationsDelegate =
+            new ApacheServerOperationsDelegate(this, pluginConfig, this.resourceContext.getSystemInformation());
+
+        //init the module names with the defaults
+        moduleNames =
+            new HashMap<String, String>(ApacheServerDiscoveryComponent.getDefaultModuleNames(binaryInfo
+                .getVersion()));
+
+        //and add the user-provided overrides/additions
+        PropertyList list = resourceContext.getPluginConfiguration().getList(PLUGIN_CONFIG_CUSTOM_MODULE_NAMES);
+
+        if (list != null) {
+            for (Property p : list.getList()) {
+                PropertyMap map = (PropertyMap) p;
+                String sourceFile = map.getSimpleValue(PLUGIN_CONFIG_MODULE_SOURCE_FILE, null);
+                String moduleName = map.getSimpleValue(PLUGIN_CONFIG_MODULE_NAME, null);
+
+                if (sourceFile == null || moduleName == null) {
+                    log.info("A corrupted module name mapping found (" + sourceFile + " = " + moduleName
+                        + "). Check your module mappings in the plugin configuration for the server: "
+                        + resourceContext.getResourceKey());
+                    continue;
+                }
+
+                moduleNames.put(sourceFile, moduleName);
+            }
+        }
+
+        startEventPollers();        
     }
 
     public void stop() {
-        this.url = null;
+    	this.url = null;
         stopEventPollers();
-        if (this.snmpClient != null) {
-            this.snmpClient.close();
-        }
-        return;
     }
 
+    public static String getBmxUrl() {
+        return bmxUrl;
+    }
+    
     public AvailabilityType getAvailability() {
-        // TODO: If URL is not set, rather than falling back to pinging the SNMP agent,
-        //       try to find a pid file under the server root, and then check if the
-        //       process is running.
-        boolean available;
-        try {
-            if (this.url != null) {
-                if (log.isDebugEnabled()) {
-                    log.debug("Trying to ping the server for availability: " + this.url);
-                }
-                long t1 = System.currentTimeMillis();
-                int timeout = PluginUtility.getAvailabilityFacetTimeout();
-                available = WWWUtils.isAvailable(this.url, timeout);
-                availPingTime = System.currentTimeMillis() - t1;
-            } else {
-                if (log.isDebugEnabled()) {
-                    log.debug("Trying to ping the server for availability through SNMP "
-                        + getSNMPAddressString(resourceContext.getPluginConfiguration()));
-                }
-                available = getSNMPSession().ping();
-                availPingTime = -1;
-            }
-        } catch (Exception e) {
-            if (log.isDebugEnabled()) {
-                log.debug("Exception while checking availability.", e);
-            }
-            available = false;
-        }
-
-        if (log.isDebugEnabled()) {
-            log.debug("Availability determined: " + (available ? AvailabilityType.UP : AvailabilityType.DOWN));
-        }
-
-        return (available) ? AvailabilityType.UP : AvailabilityType.DOWN;
+    	boolean availability = false;
+    	
+    	 try {
+    		 URL url = new URL(bmxUrl);
+    		 HttpURLConnection urlConn = (HttpURLConnection) url.openConnection();
+    		 urlConn.connect();
+    		 
+    		 if(urlConn.getResponseCode() == HttpURLConnection.HTTP_OK)
+    			 availability = true;
+    		 else
+    			 availability = false;
+    	 }catch (ConnectException e) {
+    		 log.info("The Apache server is down !"); 
+    	 } catch (MalformedURLException e) {
+    		 log.error("Malformed URL : " + bmxUrl);
+    	 } catch (IOException e) {
+    		 e.printStackTrace();
+    	 }
+    	 
+    	 if(!availability)
+    		 return AvailabilityType.DOWN;
+    	 else
+    		 return AvailabilityType.UP;
     }
 
-    public void getValues(MeasurementReport report, Set<MeasurementScheduleRequest> schedules) throws Exception {
-        SNMPSession snmpSession = getSNMPSession();
-        boolean snmpPresent = snmpSession.ping();
+    public void getValues(MeasurementReport report, Set<MeasurementScheduleRequest> metrics) throws Exception {
+    	// TODO do some clever caching of data here, so that we won't hammer mod_bmx
+        URL url = new URL(bmxUrl);
+        URLConnection conn = url.openConnection();
+        BufferedInputStream in = new BufferedInputStream(conn.getInputStream());
+        Map<String,String> values = parseInput(in);
+        in.close();
 
-        for (MeasurementScheduleRequest schedule : schedules) {
-            String metricName = schedule.getName();
-            if (metricName.equals(SERVER_BUILT_TRAIT)) {
-                MeasurementDataTrait trait = new MeasurementDataTrait(schedule, this.binaryInfo.getBuilt());
-                report.addData(trait);
-            } else if (metricName.equals("rhq_avail_ping_time")) {
-                if (availPingTime == -1)
-                    continue; // Skip if we have no data
-                MeasurementDataNumeric num = new MeasurementDataNumeric(schedule, (double) availPingTime);
-                report.addData(num);
-            } else {
-                // Assume anything else is an SNMP metric.
-                if (!snmpPresent)
-                    continue; // Skip this metric if no SNMP present
 
-                try {
-                    //noinspection UnnecessaryLocalVariable
-                    String mibName = metricName;
-                    List<SNMPValue> snmpValues = snmpSession.getColumn(mibName);
-                    if (snmpValues.isEmpty()) {
-                        log.error("No values found for MIB name [" + mibName + "].");
-                        continue;
-                    }
+         for (MeasurementScheduleRequest req : metrics) {
+             String name = req.getName();
+             if (values.containsKey(name)) {
+                 if (req.getDataType()== DataType.TRAIT) {
+                     String val = values.get(name);
+                     MeasurementDataTrait mdt = new MeasurementDataTrait(req,val);
+                     report.addData(mdt);
+                 } else {
+                    Double val = Double.valueOf(values.get(name));
+                    MeasurementDataNumeric mdn = new MeasurementDataNumeric(req,val);
+                    report.addData(mdn);
+                 }
+             }
+         }
+    }
+    
+    public static Map<String, String> parseInput(BufferedInputStream in) throws Exception {
+        Map<String,String> ret = new HashMap<String, String>();
 
-                    SNMPValue snmpValue = snmpValues.get(0);
-                    boolean valueIsTimestamp = isValueTimestamp(mibName);
+        BufferedReader reader = new BufferedReader(new InputStreamReader(in));
 
-                    log.debug("Collected SNMP metric [" + mibName + "], value = " + snmpValue);
+        String line;
 
-                    addSnmpMetricValueToReport(report, schedule, snmpValue, valueIsTimestamp);
-                } catch (SNMPException e) {
-                    log.error("An error occurred while attempting to collect an SNMP metric.", e);
-                }
+        while ((line = reader.readLine())!=null) {
+
+            if (!line.startsWith("Name: mod_bmx_"))
+                continue;
+
+            // Skip over sample data - this is no real module
+            if (line.contains("mod_bmx_example"))
+                continue;
+
+            // Now we have a modules output
+
+            // check for the status module
+            if (line.contains("mod_bmx_status")) {
+                slurpSection(ret,reader,"global");
+                continue;
+            }
+
+
+            // If the section does not match our vhost, ignore it.
+            if (!line.contains("Host="+vHost))
+                continue;
+
+            // Now some global data
+            Matcher m = typePattern.matcher(line);
+
+            if (m.matches()) {
+                String type = m.group(1);
+                if (type.contains("-"))
+                    type= type.substring(type.indexOf("-")+1);
+
+                slurpSection(ret, reader, type);
             }
         }
-    }
 
-    private boolean isValueTimestamp(String mibName) {
-        return (mibName.equals("wwwServiceStartTime"));
+        return ret;
     }
+    
+    public static void slurpSection(Map<String, String> ret, BufferedReader reader, String type) throws IOException {
+        String line;
+        while (!(line = reader.readLine()).equals("")) {
+            int pos = line.indexOf(":");
+            String key = line.substring(0,pos);
+            String val = line.substring(pos+2);
+            ret.put(type + ":" + key , val);
+        }
+    }    
 
     @Nullable
     public OperationResult invokeOperation(@NotNull String name, @NotNull Configuration params) throws Exception {
@@ -383,7 +384,7 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
             comp.close();
         }
     }
-
+    
     public void updateResourceConfiguration(ConfigurationUpdateReport report) {
         if (!isAugeasEnabled()) {
             report.setStatus(ConfigurationUpdateStatus.FAILURE);
@@ -600,46 +601,6 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
         }
 
         return report;
-    }
-
-    /**
-     * Returns an SNMP session that can be used to communicate with this server's SNMP agent.
-     *
-     * @return an SNMP session that can be used to communicate with this server's SNMP agent
-     *
-     * @throws Exception on failure to initialize the SNMP session
-     */
-    @NotNull
-    public SNMPSession getSNMPSession() throws Exception {
-        return ApacheServerComponent.getSNMPSession(this.snmpClient, this.resourceContext.getPluginConfiguration());
-    }
-
-    @NotNull
-    public static SNMPSession getSNMPSession(SNMPClient snmpClient, Configuration pluginConfig) throws Exception {
-        SNMPSession snmpSession;
-        try {
-            String host = pluginConfig.getSimple(PLUGIN_CONFIG_PROP_SNMP_AGENT_HOST).getStringValue();
-            String portString = pluginConfig.getSimple(PLUGIN_CONFIG_PROP_SNMP_AGENT_PORT).getStringValue();
-            int port = Integer.valueOf(portString);
-            String community = pluginConfig.getSimple(PLUGIN_CONFIG_PROP_SNMP_AGENT_COMMUNITY).getStringValue();
-            String timeoutString = pluginConfig.getSimpleValue(PLUGIN_CONFIG_PROP_SNMP_REQUEST_TIMEOUT, null);
-            long timeout = (timeoutString != null) ? Long.parseLong(timeoutString) : DEFAULT_SNMP_REQUEST_TIMEOUT;
-            String retriesString = pluginConfig.getSimpleValue(PLUGIN_CONFIG_PROP_SNMP_REQUEST_RETRIES, null);
-            int retries = (retriesString != null) ? Integer.parseInt(retriesString) : DEFAULT_SNMP_REQUEST_RETRIES;
-            snmpSession = snmpClient.getSession(host, port, community, SNMPClient.SNMPVersion.V2C, timeout, retries);
-        } catch (SNMPException e) {
-            throw new Exception("Error getting SNMP session: " + e.getMessage(), e);
-        }
-
-        return snmpSession;
-    }
-
-    private static String getSNMPAddressString(Configuration pluginConfig) {
-        String host = pluginConfig.getSimple(PLUGIN_CONFIG_PROP_SNMP_AGENT_HOST).getStringValue();
-        String portString = pluginConfig.getSimple(PLUGIN_CONFIG_PROP_SNMP_AGENT_PORT).getStringValue();
-        String community = pluginConfig.getSimple(PLUGIN_CONFIG_PROP_SNMP_AGENT_COMMUNITY).getStringValue();
-
-        return host + ":" + portString + "/" + community;
     }
 
     /**
@@ -873,39 +834,6 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
         return binaryInfo;
     }
 
-    // TODO: Move this method to a helper class.
-    static void addSnmpMetricValueToReport(MeasurementReport report, MeasurementScheduleRequest schedule,
-        SNMPValue snmpValue, boolean valueIsTimestamp) throws SNMPException {
-        switch (schedule.getDataType()) {
-        case MEASUREMENT: {
-            MeasurementDataNumeric metric = new MeasurementDataNumeric(schedule, (double) snmpValue.toLong());
-            report.addData(metric);
-            break;
-        }
-
-        case TRAIT: {
-            String stringValue;
-            if (valueIsTimestamp) {
-                stringValue = new Date(snmpValue.toLong()).toString();
-            } else {
-                stringValue = snmpValue.toString();
-                if (stringValue.startsWith(SNMPConstants.TCP_PROTO_ID + ".")) {
-                    // looks like a port - strip off the leading "TCP protocol id" (i.e. "1.3.6.1.2.1.6.")...
-                    stringValue = stringValue.substring(stringValue.lastIndexOf('.') + 1);
-                }
-            }
-
-            MeasurementDataTrait trait = new MeasurementDataTrait(schedule, stringValue);
-            report.addData(trait);
-            break;
-        }
-
-        default: {
-            throw new IllegalStateException("SNMP metric request has unsupported data type: " + schedule.getDataType());
-        }
-        }
-    }
-
     @NotNull
     private File resolvePathRelativeToServerRoot(@NotNull String path) {
         return resolvePathRelativeToServerRoot(this.resourceContext.getPluginConfiguration(), path);
@@ -932,6 +860,26 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
         }
 
         return propValue;
+    }
+
+    public HttpdAddressUtility getAddressUtility() {
+        String version = getVersion();
+        return HttpdAddressUtility.get(version);
+    }
+
+    private String getNewVhostFileName(HttpdAddressUtility.Address address, String mask) {
+        String filename = address.host + "_" + address.port;
+        String fullPath = mask.replace("*", filename);
+
+        File file = getFileRelativeToServerRoot(fullPath);
+
+        int i = 1;
+        while (file.exists()) {
+            filename = address.host + "_" + address.port + "-" + (i++);
+            fullPath = mask.replace("*", filename);
+            file = getFileRelativeToServerRoot(fullPath);
+        }
+        return file.getAbsolutePath();
     }
 
     private void startEventPollers() {
@@ -974,27 +922,7 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
                 DEFAULT_ERROR_LOG_PATH));
         this.eventContext.unregisterEventPoller(ERROR_LOG_ENTRY_EVENT_TYPE, errorLogFile.getPath());
     }
-
-    public HttpdAddressUtility getAddressUtility() {
-        String version = getVersion();
-        return HttpdAddressUtility.get(version);
-    }
-
-    private String getNewVhostFileName(HttpdAddressUtility.Address address, String mask) {
-        String filename = address.host + "_" + address.port;
-        String fullPath = mask.replace("*", filename);
-
-        File file = getFileRelativeToServerRoot(fullPath);
-
-        int i = 1;
-        while (file.exists()) {
-            filename = address.host + "_" + address.port + "-" + (i++);
-            fullPath = mask.replace("*", filename);
-            file = getFileRelativeToServerRoot(fullPath);
-        }
-        return file.getAbsolutePath();
-    }
-
+    
     private File getFileRelativeToServerRoot(String path) {
         File f = new File(path);
         if (f.isAbsolute()) {
@@ -1068,7 +996,7 @@ public class ApacheServerComponent implements AugeasRHQComponent, ResourceCompon
 
         return ret;
     }
-
+    
     ResourceContext getResourceContext() {
         return this.resourceContext;
     }

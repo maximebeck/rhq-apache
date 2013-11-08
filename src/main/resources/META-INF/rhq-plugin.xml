@@ -5,7 +5,7 @@
     <c:simple-property name="AddDefaultCharset" default="Off" required="false">
         <c:description>
             This directive specifies a default value for the media type charset parameter (the name of a character encoding) to be added to a response if and only if the response&#39;s content-type is either text/plain or text/html.
-            Value "Off" disables this functionality. "On" enables a default charset of iso-8859-1. Any other value is assumed to be the charset to be used, which should be one of the IANA registered charset values for use in MIME media types.         
+            Value "Off" disables this functionality. "On" enables a default charset of iso-8859-1. Any other value is assumed to be the charset to be used, which should be one of the IANA registered charset values for use in MIME media types.
         </c:description>
     </c:simple-property>
 '>
@@ -21,7 +21,7 @@
         <c:map-property name="Alias">
             <c:simple-property name="URL" description="URLs with a (&#37;-decoded) path beginning with this value will be mapped to local files beginning with directory-path. The value is case-sensitive, even on case-insensitive file systems."/>
             <c:simple-property name="directory" description="The path on the filesystem that will serve content for given url-path."/>
-        </c:map-property> 
+        </c:map-property>
     </c:list-property>
 '>
 
@@ -82,13 +82,13 @@
             <c:simple-property name="_index"  required="false" description="Helper property to retain the consistent ordering inside Apache configuration files."/>
         </c:map-property>
     </c:list-property>
-'>   
+'>
 <!ENTITY DocumentRoot '
     <c:simple-property name="DocumentRoot" default="THIS IS AUTO-DISCOVERED">
         <c:description>
             This directive sets the directory from which httpd  will serve files. Unless matched by a directive like Alias, the server appends the path from the requested URL to the document root to make the path to the document.
             If the directory-path is not absolute then it is assumed to be relative to the ServerRoot.
-            The DocumentRoot should be specified without a trailing slash. 
+            The DocumentRoot should be specified without a trailing slash.
         </c:description>
     </c:simple-property>
 '>
@@ -223,7 +223,7 @@
             <c:simple-property name="_index"  required="false" description="Helper property to retain the consistent ordering inside Apache configuration files."/>
         </c:map-property>
     </c:list-property>
-'>                
+'>
 
 <!ENTITY Deny '
     <c:list-property name="Deny" required="false">
@@ -249,7 +249,7 @@
         xmlns:c="urn:xmlns:rhq-configuration">
 
    <depends plugin="Augeas" useClasses="true"/>
-   
+
    <server name="Apache HTTP Server" discovery="ApacheServerDiscoveryComponent" class="ApacheServerComponent"
            supportsManualAdd="true"
            description="an Apache HTTP Server instance">
@@ -263,6 +263,7 @@
                readOnly: false
                activationPolicy: immediate
          -->
+
          <c:simple-property name="serverRoot" required="true"
                             description="the absolute path of the Apache server root directory" default="THIS SHOULD BE AUTO-DISCOVERED"/>
          <c:simple-property name="executablePath" required="false"
@@ -270,39 +271,8 @@
          <c:simple-property name="controlScriptPath" required="false"
                             description="the path to the Apache control script - if the path is not absolute, it will be resolved relative to the server root directory; if unset, default will be 'bin/apachectl' on UNIX or the Apache executable on Windows"/>
          <!-- TODO need to add a comment about the file location on Win* -->
-         <c:simple-property name="configFile" required="true" readOnly="true"
+         <c:simple-property name="configFile" required="true" readOnly="false"
                              description="the path to the httpd.conf file - if the path is not absolute, it will be resolved relative to the server root directory; if unset, default will be 'conf/httpd.conf' on UNIX" default="THIS SHOULD BE AUTO-DISCOVERED"/>
-         <c:simple-property name="url" displayName="URL" required="false"
-                            description="The http or https URL that will be used to check availability for this Apache
-                                server; if not set, availability will be determined based on whether plugin can connect
-                                to the Apache server's SNMP agent. Note that SSL certificate validation is disabled
-                                during availability checks if this is an HTTPS URL."/>
-         <c:simple-property name="snmpAgentHost" displayName="SNMP Agent Host" default="127.0.0.1"
-                            description="the host name or IP address of the Apache SNMP agent (typically '127.0.0.1')"/>
-
-         <c:simple-property name="snmpAgentPort" displayName="SNMP Agent Port" type="integer" default="1610"
-                            description="the UDP port of the Apache SNMP agent (typically '1610')">
-           <c:constraint>
-             <c:integer-constraint minimum="1" maximum="65535"/>
-           </c:constraint>
-         </c:simple-property>
-
-         <c:simple-property name="snmpAgentCommunity" displayName="SNMP Agent Community" default="public"
-                            description="the SNMP community of the Apache SNMP agent (typically 'public')"/>
-
-         <c:simple-property name="snmpRequestTimeout" displayName="SNMP Request Timeout" type="long" default="2000" required="false"
-                            description="the timeout, in milliseconds, for requests to the Apache SNMP agent; defaults to 2000">
-           <c:constraint>
-             <c:integer-constraint minimum="100"/>
-           </c:constraint>
-         </c:simple-property>
-
-         <c:simple-property name="snmpRequestRetries" displayName="SNMP Request Retries" type="integer" default="1" required="false"
-                            description="the number of times a request that has timed out should be retried; defaults to 1">
-           <c:constraint>
-             <c:integer-constraint minimum="0"/>
-           </c:constraint>
-         </c:simple-property>
 
          <c:simple-property name="restartAfterConfigurationUpdate" type="boolean" default="true" required="true">
             <c:description>
@@ -312,7 +282,12 @@
                 using the restart operation in the operations tab) once all the configuration updates are finished.
             </c:description>
          </c:simple-property>
-          
+
+         <!-- Bmx Configuration -->
+         <c:group name="BMX Configuration">
+             <c:simple-property name="bmxUrl" displayName="BMX Handler" required="true" default="http://localhost:8000/bmx"/>
+         </c:group>
+
           <!-- Augeas Configuration -->
           <c:group name="Augeas Configuration">
               <c:simple-property name="augeasEnabled" displayName="Enable augeas support" description="Enable augeas support" default="no">
@@ -321,16 +296,16 @@
                      <c:option value="no" name="No"/>
                    </c:property-options>
               </c:simple-property>
-              
+
               <c:simple-property name="augeasModuleName" displayName="Augeas Module Name" default="Httpd" required="true" readOnly="true"
                                             description="the name of the Augeas module/lens to use for loading and updating this resource's configuration"/>
-              <c:simple-property name="configurationFilesInclusionPatterns" 
+              <c:simple-property name="configurationFilesInclusionPatterns"
                   displayName="Httpd config file" required="true" readOnly="true"
-                                              default="/etc/httpd/conf/httpd.conf" 
+                                              default="/etc/httpd/conf/httpd.conf"
               description="Location of the Apache main configuration file."/>
-          
+
           </c:group>
-         
+
           <c:group name="Virtual Hosts">
                 <c:simple-property name="vhostCreationPolicy" displayName="Virtual Hosts Configuration Placement"
                                    description="How should the new virtual host definitions be put in the configuration" default="vhost-per-file">
@@ -348,7 +323,7 @@
                   </c:description>
                </c:simple-property>
           </c:group>
-          
+
          <c:group name="errorLog">
               <!-- TODO this is now part of the resource configuration... -->
               <c:simple-property name="errorLogFilePath" type="file" required="false"
@@ -381,10 +356,10 @@
                     Apache can use 2 values to identify a module. Either its module name that is used in the LoadModule directive
                     or its source file that can be used in the IfModule directive (as of Apache 2.1 the IfModule directive can but doesn't have to
                     use the module name, too).
-                    
+
                     The plugin contains the mappings of the module names to module files for all the standard apache modules mentioned
                     on the http://httpd.apache.org/docs/current/mod/ plus the SNMP module and mod_jk.
-                    
+
                     If you use any non-standard modules and use their source file in the IfModule directives, you have to add the module-name-to-module-file
                     mapping to this list so that the plugin can determine the correct runtime configuration of the apache instance.
                   </c:description>
@@ -392,7 +367,7 @@
                       <c:simple-property name="moduleSourceFile" description="The source file of the module (as used in IfModule directives)"/>
                       <c:simple-property name="moduleName" description="The name of the module (as used in LoadModule directives)"/>
                   </c:map-property>
-              </c:list-property>  
+              </c:list-property>
           </c:group>
       </plugin-configuration>
 
@@ -491,12 +466,6 @@
               description="the date and time this Apache server's binary was compiled"
               dataType="trait" displayType="summary"/>
 
-      <!-- traits determined via SNMP (format for property attribute is "MIB_column_name") -->
-
-      <metric displayName="Start Time" property="wwwServiceStartTime"
-              description="the date and time this Apache server was last started"
-              dataType="trait" displayType="summary"/>
-
       <!-- Metric collected by pinging availability over http -->
       <metric property="rhq_avail_ping_time" displayType="summary" units="milliseconds"
               displayName="Time to ping the server for availability"
@@ -521,7 +490,7 @@
                  IPv6 addresses must be enclosed in square brackets.
                  To receive requests on all interfaces, you can set the value to *.
                  Note that the IP address of a name-based virtual host must exactly match the value of this property.
-                 The address may be optionally followed by the port specification to further limit the directive effect.                
+                 The address may be optionally followed by the port specification to further limit the directive effect.
              </c:description>
             <c:map-property name="NameVirtualHost">
                 <c:simple-property name="address" description="A hostname, an IP address (recommended), or a * optionally followed by the port specification."/>
@@ -529,14 +498,14 @@
             </c:map-property>
         </c:list-property>
       </resource-configuration>
-      
+
       <service name="Apache Virtual Host" discovery="ApacheVirtualHostServiceDiscoveryComponent" class="ApacheVirtualHostServiceComponent" createDeletePolicy="both">
 
          <plugin-configuration>
             <c:simple-property name="url" displayName="URL" required="false"
                                description="The http or https URL that will be used to check availability for this
                                 virtual host. Note that SSL certificate validation is disabled during availability
-                                checks if this is an HTTPS URL. If the URL is not set, the availability is determined 
+                                checks if this is an HTTPS URL. If the URL is not set, the availability is determined
                                 by pinging the configured SNMP location."/>
             <c:group name="ResponseTime">
                <c:simple-property name="responseTimeLogFile" required="false"
@@ -547,11 +516,7 @@
                                   description="a space-delimited list of Perl-style substitution expressions that should be applied to all URLs for which response-time stats are collected (e.g. |^/dept/finance/.*|/dept/finance/*|)"/>
             </c:group>
          </plugin-configuration>
-
-         <!-- server info traits - determined via SNMP
-              (format for property attribute is "MIB_column_name") -->
-
-         <metric displayName="Host" property="wwwServiceName"
+         <metric displayName="Host" property="info:ServerName"
                  description="the host name or IP address of this virtual host"
                  dataType="trait" displayType="summary"/>
 
@@ -563,121 +528,109 @@
                  description="the administrator of this virtual host"
                  dataType="trait" displayType="summary"/>
 
-         <!-- summary metrics for requests - determined via SNMP
-              (format for property attribute is "MIB_column_name") -->
-
-         <metric displayName="Total Number of Requests" property="wwwSummaryInRequests"
+         <metric displayName="Total Number of Requests" property="forever:InRequests"
                  description="The number of inbound requests on the service"
                  displayType="summary"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Total Number of Bytes Received" property="wwwSummaryInLowBytes"
+         <metric displayName="Total Number of Bytes Received" property="forever:InLowBytes"
                  description="The number of bytes received by the service"
                  units="bytes" measurementType="trendsup"/>
 
-         <!-- summary metrics for responses  - determined via SNMP
-              (format for property attribute is "MIB_column_name") -->
-
-         <metric displayName="Total Number of Responses" property="wwwSummaryOutResponses"
+         <metric displayName="Total Number of Responses" property="forever:OutResponses"
                  description="The number of outbound requests on the service"
                  displayType="summary"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Total Number of Bytes Sent" property="wwwSummaryOutLowBytes"
+         <metric displayName="Total Number of Bytes Sent" property="forever:OutLowBytes"
                  description="The number of bytes sent by the service"
                  units="bytes" measurementType="trendsup"/>
 
-         <!-- per-request-method metrics - determined via SNMP
-              (format for property attribute is "MIB_column_name.HTTP_request_method") -->
-
-         <metric displayName="Number of GET Requests" property="wwwRequestInRequests.GET"
+         <metric displayName="Number of GET Requests" property="restart:InRequestsGET"
                  description="The number of inbound GET requests on the service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of HEAD Requests" property="wwwRequestInRequests.HEAD"
+         <metric displayName="Number of HEAD Requests" property="restart:InRequestsHEAD"
                  description="The number of inbound HEAD requests on the service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of POST Requests" property="wwwRequestInRequests.POST"
+         <metric displayName="Number of POST Requests" property="restart:InRequestsPOST"
                  description="The number of inbound POST requests on the service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of PUT Requests" property="wwwRequestInRequests.PUT"
+         <metric displayName="Number of PUT Requests" property="restart:InRequestsPUT"
                  description="The number of inbound PUT requests on the service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Received for GET Requests" property="wwwRequestInBytes.GET"
+         <metric displayName="Bytes Received for GET Requests" property="restart:InBytesGET"
                  description="The number of bytes received by GET requests on the service"
                  units="bytes" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Received for HEAD Requests" property="wwwRequestInBytes.HEAD"
+         <metric displayName="Bytes Received for HEAD Requests" property="restart:InBytesHEAD"
                  description="The number of bytes received by HEAD requests on the service"
                  units="bytes" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Received for POST Requests" property="wwwRequestInBytes.POST"
+         <metric displayName="Bytes Received for POST Requests" property="restart:InBytesPOST"
                  description="The number of bytes received by POST requests on the service"
                  units="bytes" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Received for PUT Requests" property="wwwRequestInBytes.PUT"
+         <metric displayName="Bytes Received for PUT Requests" property="restart:InBytesPUT"
                  description="The number of bytes received by PUT requests on the service"
                  units="bytes" measurementType="trendsup"/>
 
-         <!-- per-response-status-code metrics - determined via SNMP
-             (format for property attribute is "MIB_column_name.HTTP_response_status_code") -->
-
-         <metric displayName="Number of 200 Responses" property="wwwResponseOutResponses.200"
+         <metric displayName="Number of 200 Responses" property="restart:OutResponses200"
                  description="The number of 200 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of 301 Responses" property="wwwResponseOutResponses.301"
+         <metric displayName="Number of 301 Responses" property="restart:OutResponses301"
                  description="The number of 301 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of 302 Responses" property="wwwResponseOutResponses.302"
+         <metric displayName="Number of 302 Responses" property="restart:OutResponses302"
                  description="The number of 302 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of 401 Responses" property="wwwResponseOutResponses.401"
+         <metric displayName="Number of 401 Responses" property="restart:OutResponses401"
                  description="The number of 401 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of 403 Responses" property="wwwResponseOutResponses.403"
+         <metric displayName="Number of 403 Responses" property="restart:OutResponses403"
                  description="The number of 403 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of 404 Responses" property="wwwResponseOutResponses.404"
+         <metric displayName="Number of 404 Responses" property="restart:OutResponses404"
                  description="The number of 404 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Number of 500 Responses" property="wwwResponseOutResponses.500"
+         <metric displayName="Number of 500 Responses" property="restart:OutResponses500"
                  description="The number of 500 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Sent for 200 Responses" property="wwwResponseOutBytes.200"
+         <metric displayName="Bytes Sent for 200 Responses" property="restart:OutBytes200"
                  description="The number of bytes sent for 200 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Sent for 301 Responses" property="wwwResponseOutBytes.301"
+         <metric displayName="Bytes Sent for 301 Responses" property="restart:OutBytes301"
                  description="The number of bytes sent for 301 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Sent for 302 Responses" property="wwwResponseOutBytes.302"
+         <metric displayName="Bytes Sent for 302 Responses" property="restart:OutBytes302"
                  description="The number of bytes sent for 302 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Sent for 401 Responses" property="wwwResponseOutBytes.401"
+         <metric displayName="Bytes Sent for 401 Responses" property="restart:OutBytes401"
                  description="The number of bytes sent for 401 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Sent for 403 Responses" property="wwwResponseOutBytes.403"
+         <metric displayName="Bytes Sent for 403 Responses" property="restart:OutBytes403"
                  description="The number of bytes sent for 403 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Sent for 404 Responses" property="wwwResponseOutBytes.404"
+         <metric displayName="Bytes Sent for 404 Responses" property="restart:OutBytes404"
                  description="The number of bytes sent for 404 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
-         <metric displayName="Bytes Sent for 500 Responses" property="wwwResponseOutBytes.500"
+         <metric displayName="Bytes Sent for 500 Responses" property="restart:OutBytes500"
                  description="The number of bytes sent for 500 responses generated by this service"
                  units="none" measurementType="trendsup"/>
 
@@ -709,9 +662,9 @@
             <c:group name="Logging">
                 &ErrorLog;
                 &CustomLogs;
-            </c:group>        
+            </c:group>
          </resource-configuration>
-         
+
          <service name="Directory" class="ApacheDirectoryComponent" discovery="ApacheDirectoryDiscoveryComponent" createDeletePolicy="both">
             <plugin-configuration>
                 <c:simple-property name="regexp" displayName="Regular Expression" type="boolean" default="false" readOnly="true"
@@ -806,7 +759,7 @@
                 &UseCanonicalPhysicalPort;
             </resource-configuration>
          </service>
-         
+
          <service name="Location" class="ApacheLocationComponent" createDeletePolicy="both">
             <plugin-configuration>
                 <c:simple-property name="directiveIndex" readOnly="true" required="true" type="integer"/>
@@ -842,7 +795,7 @@
           </plugin-configuration>
 
       </service>
-      
+
    </server>
 
 </plugin>
